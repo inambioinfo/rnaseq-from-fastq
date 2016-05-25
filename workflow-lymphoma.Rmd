@@ -1,0 +1,209 @@
+---
+title: "Untitled"
+author: "Mark Dunning"
+date: "10 February 2016"
+output: html_document
+---
+
+[Transcriptional profiling of the epigenetic regulator Smchd1](http://www.sciencedirect.com/science/article/pii/S2213596015301306)
+
+Details are given in the [Supplementary Materials](http://bioinf.wehi.edu.au/folders/smchd1/Smchd1.html)
+
+```{r}
+library(SRAdb)
+sqlfile <-'SRAmetadb.sqlite'
+if(!file.exists('SRAmetadb.sqlite')) sqlfile <<- getSRAdbFile()
+```
+
+```{r}
+sra_con <- dbConnect(SQLite(),sqlfile)
+```
+
+```{r}
+sraInf <- getSRAinfo("SRP051084",sra_con, sraType="sra")
+sraInf
+```
+
+
+```{r cache=TRUE}
+sapply(sraInf$run, function(x) getSRAfile(x,sra_con, fileType="fastq"))
+```
+
+Next, download the *mm10* reference sequence from UCSC.
+
+```{eval=FALSE}
+wget --timestamping 'ftp://hgdownload.cse.ucsc.edu/goldenPath/mm10/bigZips/chromFa.tar.gz' -O chromFa.tar.gz
+gunzip chromFa.tar.gz
+tar xvf chromFa.tar
+cat *.fa > mm10.fa
+rm chr*.fa
+```
+
+It is a good idea to use the [fastqc](http://www.bioinformatics.babraham.ac.uk/projects/fastqc/) tool to perform a QA on these files. We can do this at the command-line using the following loop.
+
+```{}
+for file in *.fastq.gz
+do
+fastqc $file
+done
+```
+
+```{r}
+fastqc_reports <- list.files(pattern="fastqc.zip")
+sapply(fastqc_reports,unzip)
+```
+
+Now we can use the `Rsubread` package to build an index for the single reference fasta file that we have just created.
+
+```{r cache=TRUE}
+library(Rsubread)
+buildindex("mm10",reference = "mm10.fa")
+```
+
+Wild-Type replicate 1 (GSM1564327) appears to be run across four single-end runs
+
+```{r}
+align(readfile1="SRR1706957.fastq.gz",index = "mm10")
+align(readfile1="SRR1706958.fastq.gz",index = "mm10")
+align(readfile1="SRR1706959.fastq.gz",index = "mm10")
+align(readfile1="SRR1706960.fastq.gz",index = "mm10")
+```
+
+We can merge the bam files into one using `Rsamtools`.
+
+```{r cache=TRUE}
+library(Rsamtools)
+fls <- c("SRR1706957.fastq.gz.subread.BAM","SRR1706958.fastq.gz.subread.BAM","SRR1706959.fastq.gz.subread.BAM","SRR1706960.fastq.gz.subread.BAM")
+mergeBam(fls, destination ="GSM1564327.bam")
+sortBam(file ="GSM1564327.bam",destination ="GSM1564327.sorted")
+indexBam("GSM1564327.sorted.bam")
+```
+
+
+GSM1564328: Smchd1 null replicate 1
+
+N.B. alignment took around 50 minutes per-sample
+
+```{r cache=TRUE}
+align(readfile1 = "SRR1706961_1.fastq.gz", readfile2 = "SRR1706961_2.fastq.gz",index="mm10",output_file = "GSM1564328.bam")
+```
+
+ GSM1564329: Smchd1 null replicate 2
+
+```{r cache=TRUE}
+align(readfile1 = "SRR1706962_1.fastq.gz", readfile2 = "SRR1706962_2.fastq.gz",index="mm10",output_file = "GSM1564329.bam")
+```
+
+GSM1564330: Smchd1 null replicate 3
+
+```{r cache=TRUE}
+align(readfile1 = "SRR1706963_1.fastq.gz", readfile2 = "SRR1706963_2.fastq.gz",index="mm10",output_file = "GSM1564330.bam")
+```
+
+GSM1564331: Wild-type replicate 2
+
+```{r cache=TRUE}
+align(readfile1 = "SRR1706964_1.fastq.gz", readfile2 = "SRR1706964_2.fastq.gz",index="mm10",output_file = "GSM1564331.bam")
+```
+
+GSM1564332: Wild-type replicate 3
+
+```{r cache=TRUE}
+align(readfile1 = "SRR1706965_1.fastq.gz", readfile2 = "SRR1706965_2.fastq.gz",index="mm10",output_file = "GSM1564332.bam")
+```
+
+GSM1564333: Smchd1 null replicate 4
+
+```{r cache=TRUE}
+align(readfile1 = "SRR1706966_1.fastq.gz", readfile2 = "SRR1706966_2.fastq.gz",index="mm10",output_file = "GSM1564333.bam")
+```
+
+## Counting
+
+
+```{r}
+library(GEOquery)
+geoInf <- getGEO("GSE64099")
+targets <- pData(geoInf[[1]])
+```
+
+
+```{r}
+library(Rsubread)
+fls <- paste0(rownames(targets), ".sorted.bam")
+all(file.exists(fls))
+
+counts <- featureCounts(fls, annot.inbuilt = "mm10")
+save(counts, file="lymphoma-counts.rda")
+```
+
+
+
+## Differential Expression
+
+(from online markdown doc)
+
+```{r}
+
+
+load("lymphoma-counts.rda")
+library(org.Mm.eg.db)
+geneanno <- select(org.Mm.eg.db, keys = as.character(counts$annotation$GeneID), keytype = "ENTREZID",columns=c("SYMBOL"))
+geneanno <- data.frame(geneanno, counts$annotation)
+
+library(edgeR)
+library(limma)
+
+x <- list()
+x$counts <- counts$counts
+x$genes <- geneanno
+
+sel = rowSums(cpm(x$counts)>0.5)>=3
+
+x$counts = x$counts[sel,]
+x$genes = x$genes[sel,]
+x$anno = x$anno[sel,]
+
+samplenames = colnames(x$counts)
+genotype = ifelse(targets$characteristics_ch1.3 == "genotype: Smchd1 Wild-type, Eµ-Myc transgenic male","WT","Smcdh1-null")
+sampleanno = data.frame("sampleID"=samplenames, "genotype"=genotype, "group"=genotype)
+
+x$samples = sampleanno
+x$samples$lib.size = colSums(x$counts)
+x$samples$norm.factors = 1
+
+row.names(x$samples) = colnames(x$counts)
+
+x = new("DGEList", x)
+dim(x)
+
+
+```
+
+```{r}
+des = model.matrix(~genotype)
+des[,2]=1-des[,2]
+colnames(des)[2] = "WT"
+
+
+x = calcNormFactors(x, method="TMM")
+x = estimateDisp(x, robust=TRUE)
+```
+
+```{r}
+sqrt(x$common.disp)
+```
+
+```{r}
+v=voomWithQualityWeights(x, design=des, normalization="none", plot=TRUE,col=c("deepskyblue" ,"deepskyblue" ,"deepskyblue","deepskyblue", "darkolivegreen4", "darkolivegreen4","darkolivegreen4"))
+```
+
+```{r}
+vfit = lmFit(v,des)
+vtfit=treat(vfit,lfc=log2(1.5))
+vfit= eBayes(vfit)
+results <- decideTests(vfit,p.value=0.01)
+summary(results)
+topTable(vfit)
+```
+

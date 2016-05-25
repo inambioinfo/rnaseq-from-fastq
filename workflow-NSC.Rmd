@@ -1,0 +1,62 @@
+---
+title: "Untitled"
+author: "Mark Dunning"
+date: "10 February 2016"
+output: html_document
+---
+
+[Transcriptional profiling of the epigenetic regulator Smchd1](http://www.sciencedirect.com/science/article/pii/S2213596015301306)
+
+Details are given in the [Supplementary Materials](http://bioinf.wehi.edu.au/folders/smchd1/Smchd1.html)
+
+```{r}
+library(SRAdb)
+sqlfile <-'SRAmetadb.sqlite'
+if(!file.exists('SRAmetadb.sqlite')) sqlfile <<- getSRAdbFile()
+```
+
+```{r}
+sra_con <- dbConnect(SQLite(),sqlfile)
+```
+
+```{r}
+sraInf <- getSRAinfo("SRP053351",sra_con, sraType="sra")
+sraInf
+```
+
+
+```{r cache=TRUE}
+sapply(sraInf$run, function(x) try(getSRAfile(x,sra_con, fileType="sra"),silent=TRUE))
+```
+
+Next, download the *mm10* reference sequence from UCSC.
+
+```{}
+wget --timestamping 'ftp://hgdownload.cse.ucsc.edu/goldenPath/mm10/bigZips/chromFa.tar.gz' -O chromFa.tar.gz
+gunzip chromFa.tar.gz
+tar xvf chromFa.tar
+cat *.fa > mm10.fa
+rm chr*.fa
+```
+
+It is a good idea to use the [fastqc](http://www.bioinformatics.babraham.ac.uk/projects/fastqc/) tool to perform a QA on these files. We can do this at the command-line using the following loop.
+
+```{}
+for file in *.fastq.gz
+do
+fastqc $file
+done
+```
+
+```{r}
+fastqc_reports <- list.files(pattern="fastqc.zip")
+sapply(fastqc_reports,unzip)
+```
+
+Now we can use the `Rsubread` package to build an index for the single reference fasta file that we have just created.
+
+```{r cache=TRUE}
+library(Rsubread)
+buildindex("mm10",reference = "mm10.fa")
+```
+
